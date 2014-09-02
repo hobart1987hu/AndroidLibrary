@@ -16,13 +16,12 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.android.library.util.Utils;
-import com.android.library.util.VersionUtils;
-
 import android.annotation.TargetApi;
 import android.os.Handler;
 import android.os.Message;
 import android.os.Process;
+
+import com.android.library.util.VersionUtils;
 
 /**
  * ************************************* Copied from JB release framework:

@@ -3,7 +3,7 @@ package com.android.library.inf;
 import android.graphics.Bitmap.CompressFormat;
 
 public interface IImageConstants {
-
+    
     public static final int            HTTP_CACHE_SIZE                   = 10 * 1024 * 1024;   // 10MB
     public static final String         HTTP_CACHE_DIR                    = "http";
     public static final String         IMAGE_CACHE_DIR                   = "images";

@@ -4,6 +4,7 @@ import java.lang.ref.WeakReference;
 
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
+import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.View;
@@ -96,20 +97,29 @@ public abstract class AwareView implements ImageAware {
 		} else {
 			Log.w(TAG, WARN_CANT_SET_DRAWABLE);
 		}
-
 		return false;
 	}
 
 	@Override
-	public boolean setImageBitmap(Bitmap bitmap) {
-		if (Looper.myLooper() == Looper.getMainLooper()) {
-			if (null != mRefView && null != mRefView.get()) {
-				setImageBitmapInto(bitmap, mRefView.get());
-				return true;
-			}
-		} else {
-			Log.w(TAG, WARN_CANT_SET_BITMAP);
-		}
+	public boolean setImageBitmap(final Bitmap bitmap) {
+	    new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                if (null != mRefView && null != mRefView.get()) {
+                    setImageBitmapInto(bitmap, mRefView.get());
+                   // return true;
+                }
+            }
+        });
+//	    
+//		if (Looper.myLooper() == Looper.getMainLooper()) {
+//			if (null != mRefView && null != mRefView.get()) {
+//				setImageBitmapInto(bitmap, mRefView.get());
+//				return true;
+//			}
+//		} else {
+//			Log.w(TAG, WARN_CANT_SET_BITMAP);
+//		}
 		return false;
 	}
 
