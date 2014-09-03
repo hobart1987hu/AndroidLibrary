@@ -7,6 +7,7 @@ import java.io.InputStream;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Handler;
 import android.util.Log;
 
 import com.android.library.images.aware.ImageAware;
@@ -14,111 +15,149 @@ import com.android.library.inf.IImageLoadCallback;
 
 public class ImageDecodeRunnable implements Runnable {
 
-    private static final String            TAG = "ImageDecodeRunnable";
+    private static final String      TAG = "ImageDecodeRunnable";
 
-    private final InputStream              mBitmapStream;
+    private final InputStream        mBitmapStream;
 
-    private final ImageLoadInfo            mLoadInfo;
+    private final ImageLoadInfo      mLoadInfo;
 
     private final ImageAware         mImageWrappedView;
 
-    private final ImageLoaderConfiguration mLoaderConfig;
+    private final String             mImageUrl;
 
-    private String                         mObject;
+    private final IImageLoadCallback callback;
 
-    public ImageDecodeRunnable(ImageLoadInfo info, InputStream inputStream){
+    private final ImageLoaderWorker  mWorker;
+
+    private final Handler            mHandler;
+
+    public ImageDecodeRunnable(ImageLoaderWorker worker, ImageLoadInfo info, InputStream inputStream, Handler handler){
         mLoadInfo = info;
         mBitmapStream = inputStream;
         mImageWrappedView = mLoadInfo.mWrappedView;
-        mLoaderConfig = mLoadInfo.mLoaderConfiguration;
-        mObject = mLoadInfo.mObject;
+        mImageUrl = mLoadInfo.mObject;
+        callback = mLoadInfo.mCallback;
+        mWorker = worker;
+        mHandler = handler;
     }
 
     @Override
     public void run() {
 
-        final IImageLoadCallback callback = mLoadInfo.mCallback;
-
         if (null == mBitmapStream) {
-            failedError("start to decode bitmap found bitmap is null...", callback);
+            Log.d(TAG, "start to decode bitmap ,get bitmap stream is null,cancel worker...");
+            fireCancelEvent();
             return;
         }
+
         FileInputStream fileInputStream = (FileInputStream)mBitmapStream;
 
         FileDescriptor fileDescriptor = null;
-        ;
         try {
             fileDescriptor = fileInputStream.getFD();
         } catch (IOException e) {
-            e.printStackTrace();
+            Log.d(TAG, "get file descriptor from inputStream get IOException:" + e);
         }
 
         if (null == fileDescriptor) {
-            failedError("start to decode bitmap get file description is null...", callback);
+            Log.d(TAG, "start to decode bitmap get file description is null...");
+            fireCancelEvent();
             return;
         }
-
-        final int targetW = mImageWrappedView.getWidth();
-        final int targetH = mImageWrappedView.getHeight();
 
         Bitmap bitmap = null;
+        try {
 
-        if (fileDescriptor != null) {
+            final int targetW = mImageWrappedView.getWidth();
+            final int targetH = mImageWrappedView.getHeight();
+
+            checkTaskNotActual();
+
             bitmap = decodeSampledBitmapFromDescriptor(fileDescriptor, targetW, targetH);
-        }
 
-        if (null == bitmap) {
-            failedError("decodeSampledBitmapFromDescriptor get bitmap is null...", callback);
+            if (null == bitmap) {
+                Log.d(TAG, "decodeSampledBitmapFromDescriptor , get bitmap is null...");
+                fireCancelEvent();
+                return;
+            }
+
+            checkTaskNotActual();
+        } catch (OutOfMemoryError e) {
+            Log.d(TAG, "decodeSampledBitmapFromDescriptor ,out of memory...");
+            fireCancelEvent();
+            return;
+        } catch (TaskCancelledException e) {
+            fireCancelEvent();
             return;
         }
 
-        Log.d(TAG, "start to display....");
+        DisplayRunnable task = new DisplayRunnable(mWorker, mLoadInfo, bitmap);
 
-        if (null == callback) {
-
-            Log.d(TAG, "call back is null...");
-
-            setBitmap(bitmap, mImageWrappedView);
-            return;
-        }
-
-        if (mImageWrappedView.isCollected()) {
-
-            Log.d(TAG, "imageView is collected..");
-
-            callback.onLoadingCancelled(bitmap, mImageWrappedView.getWrappedView());
-        }
-
-        callback.onLoadingComplete(mObject, mImageWrappedView.getWrappedView(), bitmap);
-        setBitmap(bitmap, mImageWrappedView);
-
-        Log.d(TAG, "display finished..");
-        //
-        //
-        //
-        // mLoaderConfig.mImageCache.getMemoCache().put(mObject, bitmap);
-        //
-        // DisplayRunnable r = new DisplayRunnable(mLoadInfo, bitmap);
-        //
-        // mHandler.post(r);
+        runTask(task, mHandler);
     }
 
-    private void setBitmap(final Bitmap bitmap, final ImageAware wrappedView) {
+    private void fireCancelEvent() {
+        if (isTaskInterrupted()) return;
+        Runnable r = new Runnable() {
 
-        Log.d(TAG, "setBitmap....");
+            @Override
+            public void run() {
+                callback.onLoadingCancelled(mImageUrl, mImageWrappedView.getWrappedView());
+            }
+        };
+        runTask(r, mHandler);
+    }
 
-        mLoadInfo.mDisplayConfig.displayer.display(bitmap, wrappedView);
+    private boolean isTaskInterrupted() {
+        if (Thread.interrupted()) {
+            return true;
+        }
+        return false;
+    }
 
-        // if (null == bitmap) {
-        // final Bitmap failedBitmap = mDisplayConfiguration.FailedBitmap;
-        // wrappedView.setImageBitmap(failedBitmap == null ? null : failedBitmap);
-        // wrappedView.setImageDrawable(null);
-        // } else {
-        // // TODO
-        // // TransitionDrawable drawable=new TransitionDrawable(layers);
-        // // wrappedView.setImageDrawable(drawable);
-        // wrappedView.setImageBitmap(bitmap);
-        // }
+    static void runTask(Runnable r, Handler handler) {
+        handler.post(r);
+    }
+
+    /**
+     * @throws TaskCancelledException if task is not actual (target ImageAware is collected by GC or the image URI of
+     * this task doesn't match to image URI which is actual for current ImageAware at this moment)
+     */
+    private void checkTaskNotActual() throws TaskCancelledException {
+        checkViewCollected();
+        checkViewReused();
+    }
+
+    /** @throws TaskCancelledException if target ImageAware is collected */
+    private void checkViewCollected() throws TaskCancelledException {
+        if (isViewCollected()) {
+            throw new TaskCancelledException();
+        }
+    }
+
+    /** @throws TaskCancelledException if target ImageAware is collected by GC */
+    private void checkViewReused() throws TaskCancelledException {
+        if (isViewReused()) {
+            throw new TaskCancelledException();
+        }
+    }
+
+    private boolean isViewCollected() {
+        if (mImageWrappedView.isCollected()) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isViewReused() {
+        String currentCacheKey = mWorker.getLoadingUriForView(mImageWrappedView);
+        // Check whether memory cache key (image URI) for current ImageAware is actual.
+        // If ImageAware is reused for another task then current task should be cancelled.
+        boolean imageAwareWasReused = !mImageUrl.equals(currentCacheKey);
+        if (imageAwareWasReused) {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -185,12 +224,10 @@ public class ImageDecodeRunnable implements Runnable {
         // END_INCLUDE (calculate_sample_size)
     }
 
-    private void failedError(String errorInfo, IImageLoadCallback callback) {
-        if (null != callback) {
-            callback.onLoadingFailed(mObject, mImageWrappedView.getWrappedView(), errorInfo);
-        } else {
-            Log.d(TAG, "decode bitmap error:" + errorInfo);
-        }
+    /**
+     * Exceptions for case when task is cancelled (thread is interrupted, image view is reused for another task, view is
+     * collected by GC).
+     */
+    class TaskCancelledException extends Exception {
     }
-
 }

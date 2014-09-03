@@ -6,7 +6,6 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
@@ -88,38 +87,34 @@ public abstract class AwareView implements ImageAware {
 	}
 
 	@Override
-	public boolean setImageDrawable(Drawable drawable) {
-		if (Looper.myLooper() == Looper.getMainLooper()) {
-			if (null != mRefView && null != mRefView.get()) {
-				setImageDrawableInto(drawable, mRefView.get());
-				return true;
-			}
-		} else {
-			Log.w(TAG, WARN_CANT_SET_DRAWABLE);
-		}
-		return false;
+	public boolean setImageDrawable(final Drawable drawable) {
+	    
+	     if(null==mRefView||null==mRefView.get()){
+	            return false;
+	       }
+	    final ImageView imageView=mRefView.get();
+	    new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                setImageDrawableInto(drawable, imageView);
+            }
+        });
+		return true;
 	}
 
 	@Override
 	public boolean setImageBitmap(final Bitmap bitmap) {
+	    
+	    if(null==mRefView||null==mRefView.get()){
+	        return false;
+	    }
+	    final ImageView imageView=mRefView.get();
 	    new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
             public void run() {
-                if (null != mRefView && null != mRefView.get()) {
-                    setImageBitmapInto(bitmap, mRefView.get());
-                   // return true;
-                }
+                setImageBitmapInto(bitmap, imageView);
             }
         });
-//	    
-//		if (Looper.myLooper() == Looper.getMainLooper()) {
-//			if (null != mRefView && null != mRefView.get()) {
-//				setImageBitmapInto(bitmap, mRefView.get());
-//				return true;
-//			}
-//		} else {
-//			Log.w(TAG, WARN_CANT_SET_BITMAP);
-//		}
 		return false;
 	}
 

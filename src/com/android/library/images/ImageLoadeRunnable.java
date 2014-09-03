@@ -7,17 +7,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 import android.os.Build;
 import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 
 import com.android.library.cache.DiskLruCache;
+import com.android.library.images.aware.ImageAware;
+import com.android.library.inf.IImageLoadCallback;
+import com.android.library.util.Utils;
 
 public class ImageLoadeRunnable implements Runnable {
 
@@ -27,7 +27,7 @@ public class ImageLoadeRunnable implements Runnable {
 
     private static final int         DISK_CACHE_INDEX = 0;
 
-    private Object                   mObject;
+    private String                   imageUrl;
 
     private final ImageLoadInfo      mLoadInfo;
 
@@ -37,18 +37,24 @@ public class ImageLoadeRunnable implements Runnable {
 
     private ImageLoaderConfiguration mLoaderConfig;
 
+    private ImageAware               wrappedView;
+
+    private IImageLoadCallback       mListener;
+
     public ImageLoadeRunnable(ImageLoaderWorker worker, ImageLoadInfo info, Handler handler){
         mWorker = worker;
         mHandler = handler;
-        mObject = info.mObject;
+        imageUrl = info.mObject;
         mLoadInfo = info;
         mLoaderConfig = mLoadInfo.mLoaderConfiguration;
+        wrappedView = mLoadInfo.mWrappedView;
+        mListener = info.mCallback;
     }
 
     @Override
     public void run() {
 
-        waitIfPaused();
+        if (waitIfPaused()) return;
 
         ReentrantLock loadFromUriLock = mLoadInfo.loadFromUriLock;
 
@@ -64,100 +70,141 @@ public class ImageLoadeRunnable implements Runnable {
         }
 
         DiskLruCache.Snapshot snapshot = null;
-        final String key = hashKeyForDisk((String)mObject);
+        final String key = Utils.hashKeyForDisk(imageUrl);
+        final String url = imageUrl;
         InputStream inputStream = null;
 
         try {
-            snapshot = diskCache.get(key);
-        } catch (IOException e1) {
-            Log.d(TAG, "get snapshot from diskcache IOException : " + e1.getMessage());
-            e1.printStackTrace();
-        }
-        DiskLruCache.Editor editor = null;
 
-        if (null == snapshot) {
-            try {
-                editor = diskCache.edit(key);
-            } catch (IOException e) {
-                e.printStackTrace();
-                Log.d(TAG, "diskCache edit get error:" + e.getMessage());
-            }
-        }
-        if (null != editor) {
-            try {
-                if (downloadUrlToStream((String)mObject, editor.newOutputStream(DISK_CACHE_INDEX))) {
-                    editor.commit();
-                } else {
-                    editor.abort();
+            checkTaskNotActual();
+
+            snapshot = diskCache.get(key);
+
+            if (snapshot == null) {
+
+                Log.d(TAG, "processBitmap, not found in  cache, downloading...");
+
+                DiskLruCache.Editor editor = diskCache.edit(key);
+                if (editor != null) {
+                    if (downloadUrlToStream(url, editor.newOutputStream(DISK_CACHE_INDEX))) {
+                        editor.commit();
+                    } else {
+                        editor.abort();
+                    }
                 }
-            } catch (IOException e) {
-                Log.d(TAG, "downloadUrlToStream error:" + e.getMessage());
-                e.printStackTrace();
+                snapshot = diskCache.get(key);
             }
-        }
-        try {
-            snapshot = diskCache.get(key);
-        } catch (IOException e1) {
-            Log.d(TAG, "diskCache get data agagin IOException  error:" + e1.getMessage());
-            e1.printStackTrace();
-        }
-        if (snapshot != null) {
-            inputStream = snapshot.getInputStream(DISK_CACHE_INDEX);
-        }
+            if (snapshot != null) {
+                inputStream = snapshot.getInputStream(DISK_CACHE_INDEX);
+            }
 
-        loadFromUriLock.unlock();
+            checkTaskNotActual();
+            checkTaskInterrupted();
+
+        } catch (IOException e) {
+            fireCancelEvent();
+            Log.e(TAG, "download bitmap  IOException - " + e);
+        } catch (IllegalStateException e) {
+            fireCancelEvent();
+            Log.e(TAG, "download bitmap IllegalStateException - " + e);
+        } catch (TaskCancelledException e) {
+            fireCancelEvent();
+        } finally {
+            loadFromUriLock.unlock();
+        }
 
         Log.d(TAG, "start to decode bitmap....");
 
         if (null == inputStream) {
-            // TODO
-            Log.d(TAG, "get inputStrean is null...");
+            Log.d(TAG, "download bitmap get inputStrean is null...");
+            fireCancelEvent();
             return;
         }
 
-        ImageDecodeRunnable decode = new ImageDecodeRunnable(mLoadInfo, inputStream);
+        ImageDecodeRunnable decode = new ImageDecodeRunnable(mWorker, mLoadInfo, inputStream, mHandler);
 
         runTask(decode, mHandler);
+    }
 
-        // goToDecode(inputStream);
+    private void fireCancelEvent() {
+        if (isTaskInterrupted()) return;
+        Runnable r = new Runnable() {
+
+            @Override
+            public void run() {
+                mListener.onLoadingCancelled(imageUrl, wrappedView.getWrappedView());
+            }
+        };
+        runTask(r, mHandler);
     }
 
     static void runTask(Runnable r, Handler handler) {
         handler.post(r);
     }
 
-    // public void goToDecode(InputStream inputStream) {
-    // if (null == mHandler || mHandler.getLooper() != Looper.getMainLooper()) {
-    // Log.d(TAG, "sart to decode bitmap is not ui Thread ...return");
-    // return;
-    // }
-    //
-    // mHandler.post(decode);
-    // }
-
     public ImageLoadInfo getLoadInfo() {
         return mLoadInfo;
     }
 
     public Object getObject() {
-        return mObject;
+        return imageUrl;
     }
 
-    private void fireProgressEvent() {
-
+    /**
+     * @throws TaskCancelledException if task is not actual (target ImageAware is collected by GC or the image URI of
+     * this task doesn't match to image URI which is actual for current ImageAware at this moment)
+     */
+    private void checkTaskNotActual() throws TaskCancelledException {
+        checkViewCollected();
+        checkViewReused();
     }
 
-    private void fireFailEvent(String type, final Throwable failCause) {
-
+    /** @throws TaskCancelledException if target ImageAware is collected */
+    private void checkViewCollected() throws TaskCancelledException {
+        if (isViewCollected()) {
+            throw new TaskCancelledException();
+        }
     }
 
-    private void fireCancelEvent() {
-        if (isTaskInterrupted()) return;
-        // cacele callback
+    /** @throws TaskCancelledException if target ImageAware is collected by GC */
+    private void checkViewReused() throws TaskCancelledException {
+        if (isViewReused()) {
+            throw new TaskCancelledException();
+        }
     }
 
+    /** @throws TaskCancelledException if current task was interrupted */
+    private void checkTaskInterrupted() throws TaskCancelledException {
+        if (isTaskInterrupted()) {
+            throw new TaskCancelledException();
+        }
+    }
+
+    /** @return <b>true</b> - if current task was interrupted; <b>false</b> - otherwise */
     private boolean isTaskInterrupted() {
         if (Thread.interrupted()) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isTaskNotActual() {
+        return isViewCollected() || isViewReused();
+    }
+
+    private boolean isViewCollected() {
+        if (wrappedView.isCollected()) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isViewReused() {
+        String currentCacheKey = mWorker.getLoadingUriForView(wrappedView);
+        // Check whether memory cache key (image URI) for current ImageAware is actual.
+        // If ImageAware is reused for another task then current task should be cancelled.
+        boolean imageAwareWasReused = !imageUrl.equals(currentCacheKey);
+        if (imageAwareWasReused) {
             return true;
         }
         return false;
@@ -218,80 +265,30 @@ public class ImageLoadeRunnable implements Runnable {
     }
 
     private boolean waitIfPaused() {
-
         final AtomicBoolean pause = mWorker.getIsPauseWork();
-
         if (pause.get()) {
-            try {
-                mWorker.getPauseLock().wait();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            synchronized (mWorker.getPauseLock()) {
+                if (pause.get()) {
+                    try {
+                        mWorker.getPauseLock().wait();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                        return true;
+                    }
+                }
             }
         }
-        return false;
+        return isTaskNotActual();
     }
 
-    public Object getData() {
-        return mObject;
+    public String getImageUrl() {
+        return imageUrl;
     }
 
     /**
-     * A hashing method that changes a string (like a URL) into a hash suitable for using as a disk filename.
+     * Exceptions for case when task is cancelled (thread is interrupted, image view is reused for another task, view is
+     * collected by GC).
      */
-    public static String hashKeyForDisk(String key) {
-        String cacheKey;
-        try {
-            final MessageDigest mDigest = MessageDigest.getInstance("MD5");
-            mDigest.update(key.getBytes());
-            cacheKey = bytesToHexString(mDigest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            cacheKey = String.valueOf(key.hashCode());
-        }
-        return cacheKey;
+    class TaskCancelledException extends Exception {
     }
-
-    private static String bytesToHexString(byte[] bytes) {
-        // http://stackoverflow.com/questions/332079
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < bytes.length; i++) {
-            String hex = Integer.toHexString(0xFF & bytes[i]);
-            if (hex.length() == 1) {
-                sb.append('0');
-            }
-            sb.append(hex);
-        }
-        return sb.toString();
-    }
-
-    //
-    // try {
-    // if (null == snapshot) {
-    // try {
-    // editor = diskCache.edit(data);
-    // } catch (IOException e) {
-    // e.printStackTrace();
-    // Log.d(TAG, "diskCache edit get error:" + e.getMessage());
-    // }
-    // if (null != editor) {
-    // waitIfPaused();
-    // if (downloadUrlToStream(data, editor.newOutputStream(DISK_CACHE_INDEX))) {
-    // editor.commit();
-    // } else {
-    // editor.abort();
-    // }
-    // }
-    // snapshot = diskCache.get(data);
-    // }
-    // if (snapshot != null) {
-    // inputStream = snapshot.getInputStream(DISK_CACHE_INDEX);
-    // }
-    // } catch (IOException e) {
-    // Log.d(TAG, "IOException :" + e);
-    // } catch (OutOfMemoryError e) {
-    // Log.d(TAG, "OutOfMemoryError :" + e);
-    // } catch (Throwable e) {
-    // Log.d(TAG, "Throwable :" + e);
-    // } finally {
-    // loadFromUriLock.unlock();
-    // }
 }
