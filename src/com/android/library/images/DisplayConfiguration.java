@@ -77,8 +77,16 @@ public class DisplayConfiguration {
 
             return new DisplayConfiguration(this);
         }
-
     }
+    
+    public Handler getHandler(){
+        return mHandler;
+    }
+    
+    public BitmapDisplayer getDisplayer(){
+        return displayer;
+    }
+    
     /** Creates default implementation of {@link BitmapDisplayer} - {@link SimpleBitmapDisplayer} */
     public static BitmapDisplayer createBitmapDisplayer() {
         return new SimpleBitmapDisplayer();

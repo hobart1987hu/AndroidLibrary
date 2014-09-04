@@ -4,8 +4,8 @@ import java.lang.ref.WeakReference;
 
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
-import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
@@ -14,25 +14,25 @@ public abstract class AwareView implements ImageAware {
 
 	private static final String TAG = "AwareView";
 
-	protected WeakReference<ImageView> mRefView;
+	protected WeakReference<View> mRefView;
 
-	public AwareView(ImageView imageView) {
-		mRefView = new WeakReference<ImageView>(imageView);
+	public AwareView(View view ) {
+		mRefView = new WeakReference<View>(view);
 	}
 
 	@Override
 	public int getWidth() {
 		if (null != mRefView && null != mRefView.get()) {
 
-			final ImageView imageView = mRefView.get();
+			final View view =mRefView.get();
 
-			ViewGroup.LayoutParams params = imageView.getLayoutParams();
+			ViewGroup.LayoutParams params = view.getLayoutParams();
 
 			int width = 0;
 
 			if (null != params
 					&& params.width != ViewGroup.LayoutParams.WRAP_CONTENT) {
-				width = imageView.getWidth();// Get actual image width
+				width = view.getWidth();// Get actual image width
 			}
 			if (width == 0 && null != params) {
 				width = params.width;// Get layout width parameter
@@ -45,15 +45,15 @@ public abstract class AwareView implements ImageAware {
 	public int getHeight() {
 		if (null != mRefView && null != mRefView.get()) {
 
-			final ImageView imageView = mRefView.get();
+			final View view = mRefView.get();
 
-			ViewGroup.LayoutParams params = imageView.getLayoutParams();
+			ViewGroup.LayoutParams params = view.getLayoutParams();
 
 			int height = 0;
 
 			if (null != params
 					&& params.width != ViewGroup.LayoutParams.WRAP_CONTENT) {
-				height = imageView.getHeight();// Get actual image height
+				height = view.getHeight();// Get actual image height
 			}
 			if (height == 0 && null != params) {
 				height = params.height;// Get layout height parameter
@@ -64,59 +64,47 @@ public abstract class AwareView implements ImageAware {
 
 	@Override
 	public View getWrappedView() {
-		if (null != mRefView && null != mRefView.get()) {
-			return mRefView.get();
-		}
-		return null;
+	    return mRefView.get();
 	}
 
 	@Override
 	public boolean isCollected() {
-		if (null != mRefView && null != mRefView.get()) {
-			return false;
-		}
-		return true;
+	    return mRefView.get() == null;
 	}
 
 	@Override
 	public int getId() {
-		if (null != mRefView && null != mRefView.get()) {
-			return mRefView.get().hashCode();
-		}
-		return super.hashCode();
-	}
+        View view = mRefView.get();
+        return view == null ? super.hashCode() : view.hashCode();
+    }
 
 	@Override
 	public boolean setImageDrawable(final Drawable drawable) {
-	    
-	     if(null==mRefView||null==mRefView.get()){
-	            return false;
-	       }
-	    final ImageView imageView=mRefView.get();
-	    new Handler(Looper.getMainLooper()).post(new Runnable() {
-            @Override
-            public void run() {
-                setImageDrawableInto(drawable, imageView);
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            View view = mRefView.get();
+            if (view != null) {
+                setImageDrawableInto(drawable, view);
+                return true;
             }
-        });
-		return true;
-	}
+        } else {
+            Log.w(TAG, WARN_CANT_SET_DRAWABLE);
+        }
+        return false;
+    }
 
 	@Override
 	public boolean setImageBitmap(final Bitmap bitmap) {
-	    
-	    if(null==mRefView||null==mRefView.get()){
-	        return false;
-	    }
-	    final ImageView imageView=mRefView.get();
-	    new Handler(Looper.getMainLooper()).post(new Runnable() {
-            @Override
-            public void run() {
-                setImageBitmapInto(bitmap, imageView);
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            View view = mRefView.get();
+            if (view != null) {
+                setImageBitmapInto(bitmap, view);
+                return true;
             }
-        });
-		return false;
-	}
+        } else {
+            Log.w(TAG, WARN_CANT_SET_BITMAP);
+        }
+        return false;
+    }
 
 	/**
 	 * Should set drawable into incoming view. Incoming view is guaranteed not

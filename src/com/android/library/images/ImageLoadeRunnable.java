@@ -10,6 +10,8 @@ import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.Handler;
 import android.util.Log;
@@ -21,25 +23,25 @@ import com.android.library.util.Utils;
 
 public class ImageLoadeRunnable implements Runnable {
 
-    private static final String      TAG              = "ImageLoadeRunnable";
+    private static final String            TAG              = "ImageLoadeRunnable";
 
-    private static final int         IO_BUFFER_SIZE   = 8 * 1024;
+    private static final int               IO_BUFFER_SIZE   = 8 * 1024;
 
-    private static final int         DISK_CACHE_INDEX = 0;
+    private static final int               DISK_CACHE_INDEX = 0;
 
-    private String                   imageUrl;
+    private final String                   imageUrl;
 
-    private final ImageLoadInfo      mLoadInfo;
+    private final ImageLoadInfo            mLoadInfo;
 
-    private final Handler            mHandler;
+    private final Handler                  mHandler;
 
-    private final ImageLoaderWorker  mWorker;
+    private final ImageLoaderWorker        mWorker;
 
-    private ImageLoaderConfiguration mLoaderConfig;
+    private final ImageLoaderConfiguration mLoaderConfig;
 
-    private ImageAware               wrappedView;
+    private final ImageAware               wrappedView;
 
-    private IImageLoadCallback       mListener;
+    private final IImageLoadCallback       mListener;
 
     public ImageLoadeRunnable(ImageLoaderWorker worker, ImageLoadInfo info, Handler handler){
         mWorker = worker;
@@ -60,70 +62,134 @@ public class ImageLoadeRunnable implements Runnable {
 
         loadFromUriLock.lock();
 
-        DiskLruCache diskCache = mLoaderConfig.mImageCache.getDiskCache();
-
-        if (null == diskCache) {
-
-            Log.d(TAG, "disk cache is null...");
-
-            return;
-        }
-
-        DiskLruCache.Snapshot snapshot = null;
-        final String key = Utils.hashKeyForDisk(imageUrl);
-        final String url = imageUrl;
-        InputStream inputStream = null;
+        Bitmap bitmap;
 
         try {
 
             checkTaskNotActual();
 
-            snapshot = diskCache.get(key);
+            bitmap = mLoaderConfig.mImageCache.getBitmapFromMemoCache(imageUrl);
 
-            if (snapshot == null) {
+            if (null == bitmap || bitmap.isRecycled()) {
 
-                Log.d(TAG, "processBitmap, not found in  cache, downloading...");
+                bitmap = tryLoadBitmap();
 
-                DiskLruCache.Editor editor = diskCache.edit(key);
-                if (editor != null) {
-                    if (downloadUrlToStream(url, editor.newOutputStream(DISK_CACHE_INDEX))) {
-                        editor.commit();
-                    } else {
-                        editor.abort();
-                    }
+                if (null == bitmap) {// listener callback already was fired
+                    return;
                 }
-                snapshot = diskCache.get(key);
-            }
-            if (snapshot != null) {
-                inputStream = snapshot.getInputStream(DISK_CACHE_INDEX);
+
+                checkTaskNotActual();
+                checkTaskInterrupted();
+
+                mLoaderConfig.mImageCache.addBitmapToCache(imageUrl, bitmap);
             }
 
             checkTaskNotActual();
             checkTaskInterrupted();
 
-        } catch (IOException e) {
-            fireCancelEvent();
-            Log.e(TAG, "download bitmap  IOException - " + e);
-        } catch (IllegalStateException e) {
-            fireCancelEvent();
-            Log.e(TAG, "download bitmap IllegalStateException - " + e);
         } catch (TaskCancelledException e) {
             fireCancelEvent();
+            return;
         } finally {
             loadFromUriLock.unlock();
         }
+        display(bitmap);
+    }
 
-        Log.d(TAG, "start to decode bitmap....");
+    private void display(Bitmap bitmap) {
+        DisplayRunnable task = new DisplayRunnable(mWorker, mLoadInfo, bitmap);
+        runTask(task, mHandler);
+    }
 
-        if (null == inputStream) {
-            Log.d(TAG, "download bitmap get inputStrean is null...");
-            fireCancelEvent();
-            return;
+    private Bitmap tryLoadBitmap() throws TaskCancelledException {
+        Bitmap bitmap = null;
+        try {
+            checkTaskNotActual();
+            // load from diskcache
+            bitmap = mLoaderConfig.mImageCache.getBitmapFromDiskCache(imageUrl);
+
+            if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+
+                checkTaskNotActual();
+
+                bitmap = loadBitmapFromNetWork();
+
+                if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+                    fireFailEvent("loadBitmFromNetWork error");
+                }
+            }
+            checkTaskNotActual();
+            checkTaskInterrupted();
+        } catch (IllegalStateException e) {
+            Log.d(TAG, "network error --" + e);
+            fireFailEvent("network error");
+        } catch (TaskCancelledException e) {
+            throw e;
+        } catch (OutOfMemoryError e) {
+            Log.d(TAG, "out of memory --" + e);
+            fireFailEvent("out of memory");
+        } catch (Throwable e) {
+            Log.d(TAG, "unknow --" + e);
+            fireFailEvent("unknow");
         }
+        return bitmap;
+    }
 
-        ImageDecodeRunnable decode = new ImageDecodeRunnable(mWorker, mLoadInfo, inputStream, mHandler);
+    private Bitmap loadBitmapFromNetWork() {
 
-        runTask(decode, mHandler);
+        final String key = Utils.hashKeyForDisk(imageUrl);
+        InputStream inputStream = null;
+        DiskLruCache.Snapshot snapshot;
+        DiskLruCache diskCache = mLoaderConfig.mImageCache.getDiskCache();
+
+        Bitmap bitmap = null;
+
+        if (diskCache != null) {
+            try {
+                snapshot = diskCache.get(key);
+                if (snapshot == null) {
+                    Log.d(TAG, "loadBitmapFromNetWork, not found in  cache, downloading...");
+                    DiskLruCache.Editor editor = diskCache.edit(key);
+                    if (editor != null) {
+                        if (downloadUrlToStream(imageUrl, editor.newOutputStream(DISK_CACHE_INDEX))) {
+                            editor.commit();
+                        } else {
+                            editor.abort();
+                        }
+                    }
+                    snapshot = diskCache.get(key);
+                }
+                if (snapshot != null) {
+                    inputStream = snapshot.getInputStream(DISK_CACHE_INDEX);
+                }
+                final int targetW = wrappedView.getWidth();
+                final int targetH = wrappedView.getHeight();
+
+                if (inputStream != null) {
+                    bitmap = decodeSampledBitmapFromDescriptor(inputStream, targetW, targetH);
+                }
+            } catch (IOException e) {
+                Log.e(TAG, "processBitmap IOException- " + e);
+                fireFailEvent("loadBitmapFromNetWork IOException");
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "processBitmap IllegalStateException- " + e);
+                fireFailEvent("loadBitmapFromNetWork IllegalStateException");
+            } catch (OutOfMemoryError e) {
+                Log.e(TAG, "processBitmap  OutOfMemoryError- " + e);
+                fireFailEvent("loadBitmapFromNetWork OutOfMemoryError");
+            } catch (Throwable e) {
+                Log.e(TAG, "processBitmap  Throwable- " + e);
+                fireFailEvent("unknow");
+            }
+        }
+        if (null != inputStream) {
+            try {
+                inputStream.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return bitmap;
     }
 
     private void fireCancelEvent() {
@@ -136,6 +202,19 @@ public class ImageLoadeRunnable implements Runnable {
             }
         };
         runTask(r, mHandler);
+    }
+
+    private void fireFailEvent(final String reason) {
+        if (isTaskInterrupted()) return;
+        Runnable r = new Runnable() {
+
+            @Override
+            public void run() {
+                mListener.onLoadingFailed(imageUrl, wrappedView.getWrappedView(), reason);
+            }
+        };
+        runTask(r, mHandler);
+
     }
 
     static void runTask(Runnable r, Handler handler) {
@@ -283,6 +362,71 @@ public class ImageLoadeRunnable implements Runnable {
 
     public String getImageUrl() {
         return imageUrl;
+    }
+
+    /**
+     * Decode and sample down a bitmap from a file input stream to the requested width and height.
+     * 
+     * @param fileDescriptor The file descriptor to read from
+     * @param reqWidth The requested width of the resulting bitmap
+     * @param reqHeight The requested height of the resulting bitmap
+     * @param cache The ImageCache used to find candidate bitmaps for use with inBitmap
+     * @return A bitmap sampled down from the original with the same aspect ratio and dimensions that are equal to or
+     * greater than the requested width and height
+     */
+    public static Bitmap decodeSampledBitmapFromDescriptor(InputStream inputStream, int reqWidth, int reqHeight) {
+
+        // First decode with inJustDecodeBounds=true to check dimensions
+        final BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+
+        BitmapFactory.decodeStream(inputStream, null, options);
+
+        // Calculate inSampleSize
+        options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight);
+
+        // Decode bitmap with inSampleSize set
+        options.inJustDecodeBounds = false;
+
+        return BitmapFactory.decodeStream(inputStream, null, options);
+    }
+
+    public static int calculateInSampleSize(BitmapFactory.Options options, int reqWidth, int reqHeight) {
+        // BEGIN_INCLUDE (calculate_sample_size)
+        // Raw height and width of image
+        final int height = options.outHeight;
+        final int width = options.outWidth;
+        int inSampleSize = 1;
+
+        if (height > reqHeight || width > reqWidth) {
+
+            final int halfHeight = height / 2;
+            final int halfWidth = width / 2;
+
+            // Calculate the largest inSampleSize value that is a power of 2 and keeps both
+            // height and width larger than the requested height and width.
+            while ((halfHeight / inSampleSize) > reqHeight && (halfWidth / inSampleSize) > reqWidth) {
+                inSampleSize *= 2;
+            }
+
+            // This offers some additional logic in case the image has a strange
+            // aspect ratio. For example, a panorama may have a much larger
+            // width than height. In these cases the total pixels might still
+            // end up being too large to fit comfortably in memory, so we should
+            // be more aggressive with sample down the image (=larger inSampleSize).
+
+            long totalPixels = width * height / inSampleSize;
+
+            // Anything more than 2x the requested pixels we'll sample down further
+            final long totalReqPixelsCap = reqWidth * reqHeight * 2;
+
+            while (totalPixels > totalReqPixelsCap) {
+                inSampleSize *= 2;
+                totalPixels /= 2;
+            }
+        }
+        return inSampleSize;
+        // END_INCLUDE (calculate_sample_size)
     }
 
     /**

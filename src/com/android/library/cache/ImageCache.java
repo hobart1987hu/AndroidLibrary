@@ -15,6 +15,7 @@ import android.support.v4.util.LruCache;
 import android.util.Log;
 
 import com.android.library.util.FileUtils;
+import com.android.library.util.Utils;
 import com.android.library.util.VersionUtils;
 
 public class ImageCache {
@@ -41,13 +42,8 @@ public class ImageCache {
 
             @Override
             protected int sizeOf(String key, Bitmap value) {
-                final int size = getBitmapSize(value) / 1024;
-                return size > 0 ? size : 1;
-            }
-
-            @Override
-            protected void entryRemoved(boolean evicted, String key, Bitmap oldValue, Bitmap newValue) {
-                super.entryRemoved(evicted, key, oldValue, newValue);
+                final int bitmapSize = getBitmapSize(value) / 1024;
+                return bitmapSize == 0 ? 1 : bitmapSize;
             }
         };
         initDiskCache();
@@ -55,10 +51,6 @@ public class ImageCache {
 
     public DiskLruCache getDiskCache() {
         return mDiskLruCache;
-    }
-
-    public LruCache<String, Bitmap> getMemoCache() {
-        return mMemoCache;
     }
 
     public void initDiskCache() {
@@ -70,13 +62,13 @@ public class ImageCache {
                     if (!diskCacheDir.exists()) {
                         diskCacheDir.mkdirs();
                     }
-                    
-                    Log.d(TAG, "disk cache path:"+diskCacheDir.getAbsolutePath());
-                    
-                    final long usableSpace =FileUtils.getUsableSpace(diskCacheDir);
-                    
-                    Log.d(TAG, "usableSpace:"+usableSpace);
-                    
+
+                    Log.d(TAG, "disk cache path:" + diskCacheDir.getAbsolutePath());
+
+                    final long usableSpace = FileUtils.getUsableSpace(diskCacheDir);
+
+                    Log.d(TAG, "usableSpace:" + usableSpace);
+
                     if (usableSpace > mCacheParams.mDiskCacheSize) {
                         try {
                             mDiskLruCache = DiskLruCache.open(diskCacheDir, 1, 1, mCacheParams.mDiskCacheSize);
@@ -103,7 +95,7 @@ public class ImageCache {
         synchronized (mDiskCacheLock) {
             // Add to disk cache
             if (null != mDiskLruCache) {
-                final String key = hashKeyForDisk(data);
+                final String key = Utils.hashKeyForDisk(data);
                 OutputStream out = null;
                 try {
                     DiskLruCache.Snapshot snapshot = mDiskLruCache.get(key);
@@ -142,7 +134,7 @@ public class ImageCache {
     }
 
     public Bitmap getBitmapFromDiskCache(String data) {
-        final String key = hashKeyForDisk(data);
+        final String key = Utils.hashKeyForDisk(data);
         Bitmap bitmap = null;
         synchronized (mDiskCacheLock) {
             if (mDiskLruCache != null) {
@@ -171,39 +163,15 @@ public class ImageCache {
         }
     }
 
-    public static String hashKeyForDisk(String key) {
-        String cacheKey;
-        try {
-            final MessageDigest mDigest = MessageDigest.getInstance("MD5");
-            mDigest.update(key.getBytes());
-            cacheKey = bytesToHexString(mDigest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            cacheKey = String.valueOf(key.hashCode());
-        }
-        return cacheKey;
-    }
-
-    private static String bytesToHexString(byte[] bytes) {
-        // http://stackoverflow.com/questions/332079
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < bytes.length; i++) {
-            String hex = Integer.toHexString(0xFF & bytes[i]);
-            if (hex.length() == 1) {
-                sb.append('0');
-            }
-            sb.append(hex);
-        }
-        return sb.toString();
-    }
-
+    // @TargetApi(VERSION_CODES.KITKAT)
     private int getBitmapSize(Bitmap value) {
 
-        if (VersionUtils.hasKitKat()) {
-            return value.getAllocationByteCount();
-        }
-        if (VersionUtils.hasHoneycombMR1()) {
-            return value.getByteCount();
-        }
+        // if (VersionUtils.hasKitKat()) {
+        // return value.getAllocationByteCount();
+        // }
+        // if (VersionUtils.hasHoneycombMR1()) {
+        // return value.getByteCount();
+        // }
         return value.getRowBytes() * value.getHeight();
     }
 
@@ -218,5 +186,84 @@ public class ImageCache {
         public ImageCacheParams(Context context, String diskCacheName){
             mDiskFile = FileUtils.getDiskCacheDirectory(context, diskCacheName);
         }
+    }
+
+    /**
+     * Clears both the memory and disk cache associated with this ImageCache object. Note that this includes disk access
+     * so this should not be executed on the main/UI thread.
+     */
+    public void clearCache() {
+        if (mMemoCache != null) {
+            mMemoCache.evictAll();
+            Log.d(TAG, "Memory cache cleared");
+        }
+        synchronized (mDiskCacheLock) {
+            if (mDiskLruCache != null && !mDiskLruCache.isClosed()) {
+                try {
+                    mDiskLruCache.delete();
+                    Log.d(TAG, "Disk cache cleared");
+                } catch (IOException e) {
+                    Log.e(TAG, "clearCache - " + e);
+                }
+                mDiskLruCache = null;
+                initDiskCache();
+            }
+        }
+    }
+
+    /**
+     * Flushes the disk cache associated with this ImageCache object. Note that this includes disk access so this should
+     * not be executed on the main/UI thread.
+     */
+    public void flush() {
+        synchronized (mDiskCacheLock) {
+            if (mDiskLruCache != null) {
+                try {
+                    mDiskLruCache.flush();
+                    Log.d(TAG, "Disk cache flushed");
+                } catch (IOException e) {
+                    Log.e(TAG, "flush - " + e);
+                }
+            }
+        }
+    }
+
+    /**
+     * Closes the disk cache associated with this ImageCache object. Note that this includes disk access so this should
+     * not be executed on the main/UI thread.
+     */
+    public void close() {
+        synchronized (mDiskCacheLock) {
+            if (mDiskLruCache != null) {
+                try {
+                    if (!mDiskLruCache.isClosed()) {
+                        mDiskLruCache.close();
+                        mDiskLruCache = null;
+                        Log.d(TAG, "Disk cache closed");
+                    }
+                } catch (IOException e) {
+                    Log.e(TAG, "close - " + e);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get All Cache Size
+     * 
+     * @return cache size in kilobytes
+     */
+    public long getCacheSize() {
+        long memorySize = 0;
+        long diskLruCacheSize = 0;
+        if (null != mMemoCache) {
+            memorySize = mMemoCache.size();
+        }
+        synchronized (mDiskCacheLock) {
+            if (null != mDiskLruCache) {
+                diskLruCacheSize = mDiskLruCache.size();
+            }
+        }
+        return memorySize + diskLruCacheSize;
     }
 }

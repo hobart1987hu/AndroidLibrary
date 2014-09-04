@@ -40,28 +40,16 @@ public class DisplayRunnable implements Runnable {
         Log.d(TAG, "start to display....");
 
         if (mImageWrappedView.isCollected()) {
-
             Log.d(TAG, "imageView is collected..");
-
             mCallback.onLoadingCancelled(mBitmap, mImageWrappedView.getWrappedView());
-
         } else if (isViewWasReused()) {
-
             Log.d(TAG, "imageView is reused..");
-
             mCallback.onLoadingCancelled(mBitmap, mImageWrappedView.getWrappedView());
         } else {
-
-            Log.d(TAG, "display ...");
-
             mDisplayConfiguration.displayer.display(mBitmap, mImageWrappedView);
-
             mImageWorker.cancelDisplayTaskFor(mImageWrappedView);
-
             mCallback.onLoadingComplete(mObject, mImageWrappedView.getWrappedView(), mBitmap);
         }
-
-        Log.d(TAG, "display finished..");
     }
 
     /** Checks whether memory cache key (image URI) for current ImageAware is actual */

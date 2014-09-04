@@ -44,7 +44,6 @@ public class ImageLoaderConfiguration {
                                                    + "between 0.01 and 0.8 (inclusive)");
             }
             mMemoCacheSize = Math.round(percent * Runtime.getRuntime().maxMemory() / 1024);
-
             return this;
         }
 

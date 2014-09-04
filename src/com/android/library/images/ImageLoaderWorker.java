@@ -18,27 +18,27 @@ import com.android.library.images.aware.ImageAware;
 
 public class ImageLoaderWorker {
 
-    private static final int                 CORE_POOL_SIZE  = 10;
+    private static final int                 CORE_POOL_SIZE          = 10;
 
-    private static final int                 MAX_POOL_SIZE   = 20;
+    private static final int                 MAX_POOL_SIZE           = 20;
 
-    private static final int                 KEEP_ALIVE_TIME = 1;
+    private static final int                 KEEP_ALIVE_TIME         = 1;
 
-    private static final TimeUnit            unit            = TimeUnit.MILLISECONDS;
+    private static final TimeUnit            unit                    = TimeUnit.MILLISECONDS;
 
     private Executor                         taskDistributor;
 
     private Executor                         taskExecutorForCachedImages;
 
     private Executor                         taskExecutor;
-    
-    private Executor taskExecutorForDisplay;
-    
-    private Map<Integer, String> cacheKeysForImageAwares =Collections.synchronizedMap(new HashMap<Integer, String>());
+
+    private Executor                         taskExecutorForDisplay;
+
+    private Map<Integer, String>             cacheKeysForImageAwares = Collections.synchronizedMap(new HashMap<Integer, String>());
 
     private ImageLoaderConfiguration         mLoaderConfiguration;
 
-    private final Map<String, ReentrantLock> uriLocks        = new WeakHashMap<String, ReentrantLock>();
+    private final Map<String, ReentrantLock> uriLocks                = new WeakHashMap<String, ReentrantLock>();
 
     public ImageLoaderWorker(ImageLoaderConfiguration loaderConfiguration){
 
@@ -52,27 +52,30 @@ public class ImageLoaderWorker {
 
         taskExecutor = new ThreadPoolExecutor(CORE_POOL_SIZE, MAX_POOL_SIZE, KEEP_ALIVE_TIME, unit,
                                               new LinkedBlockingDeque<Runnable>());
-        
-        taskExecutorForDisplay=new ThreadPoolExecutor(CORE_POOL_SIZE, MAX_POOL_SIZE, KEEP_ALIVE_TIME, unit,
-                                                      new LinkedBlockingDeque<Runnable>());
+
+        taskExecutorForDisplay = new ThreadPoolExecutor(CORE_POOL_SIZE, MAX_POOL_SIZE, KEEP_ALIVE_TIME, unit,
+                                                        new LinkedBlockingDeque<Runnable>());
     }
 
     public void submit(final ImageLoadeRunnable task) {
         taskDistributor.execute(new Runnable() {
+
             @Override
             public void run() {
                 final Bitmap bitmap = mLoaderConfiguration.mImageCache.getBitmapFromDiskCache(task.getImageUrl());
                 initExecutorsIfNeed();
-                if (null != bitmap) {
-                    taskExecutorForCachedImages.execute(new DisplayRunnable(ImageLoaderWorker.this,task.getLoadInfo(), bitmap));
+                if (null != bitmap && !bitmap.isRecycled()) {
+                    taskExecutorForCachedImages.execute(task);
                 } else {
                     taskExecutor.execute(task);
                 }
             }
         });
     }
-    public void submit(final DisplayRunnable task){
+
+    public void submit(final DisplayRunnable task) {
         taskDistributor.execute(new Runnable() {
+
             @Override
             public void run() {
                 initExecutorsIfNeedForDisplay();
@@ -80,11 +83,13 @@ public class ImageLoaderWorker {
             }
         });
     }
-    private void initExecutorsIfNeedForDisplay(){
+
+    private void initExecutorsIfNeedForDisplay() {
         if (((ExecutorService)taskExecutorForDisplay).isShutdown()) {
             taskExecutorForDisplay = createExecutor();
         }
     }
+
     private void initExecutorsIfNeed() {
         if (((ExecutorService)taskExecutor).isShutdown()) {
             taskExecutor = createExecutor();
@@ -98,7 +103,7 @@ public class ImageLoaderWorker {
         return new ThreadPoolExecutor(CORE_POOL_SIZE, MAX_POOL_SIZE, KEEP_ALIVE_TIME, unit,
                                       new LinkedBlockingDeque<Runnable>());
     }
-    
+
     public String getLoadingUriForView(ImageAware imageAware) {
         return cacheKeysForImageAwares.get(imageAware.getId());
     }
@@ -110,7 +115,6 @@ public class ImageLoaderWorker {
     public void cancelDisplayTaskFor(ImageAware imageAware) {
         cacheKeysForImageAwares.remove(imageAware.getId());
     }
-
 
     private AtomicBoolean mPuseWork  = new AtomicBoolean(false);
     private final Object  mPauseLock = new Object();
@@ -145,20 +149,10 @@ public class ImageLoaderWorker {
         return lock;
     }
 
-    // TODO
-    public void onDestory() {
+    public void stop() {
         ((ExecutorService)taskExecutor).shutdownNow();
         ((ExecutorService)taskExecutorForCachedImages).shutdownNow();
+        cacheKeysForImageAwares.clear();
+        uriLocks.clear();
     }
-
-    // TODO
-    public void clear() {
-
-    }
-    //TODO
-    public long getCacheSize(){
-        
-        return 0;
-    }
-    
 }

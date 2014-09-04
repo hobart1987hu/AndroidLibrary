@@ -90,6 +90,8 @@ public class ImageDecodeRunnable implements Runnable {
             fireCancelEvent();
             return;
         }
+        
+        mLoadInfo.mLoaderConfiguration.mImageCache.addBitmapToCache(mImageUrl, bitmap);
 
         DisplayRunnable task = new DisplayRunnable(mWorker, mLoadInfo, bitmap);
 
